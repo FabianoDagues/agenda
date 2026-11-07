@@ -16,7 +16,10 @@ from sqlalchemy.exc import IntegrityError
 logging.basicConfig(level=logging.INFO)
 log=logging.getLogger('agenda')
 ROOT=Path(__file__).parent
+APP_VERSION='2.1.0'
 TZ=ZoneInfo(os.getenv('APP_TIMEZONE','America/Sao_Paulo'))
+if os.getenv('RAILWAY_ENVIRONMENT') and not os.getenv('DATABASE_URL'):
+    raise RuntimeError('Defina DATABASE_URL apontando para o PostgreSQL do projeto Agenda')
 url=os.getenv('DATABASE_URL','sqlite:///./agenda_local.db')
 if url.startswith('postgres://'): url='postgresql+psycopg2://'+url[11:]
 elif url.startswith('postgresql://'): url='postgresql+psycopg2://'+url[13:]
@@ -154,19 +157,19 @@ app.mount('/static',StaticFiles(directory=ROOT/'static'),name='static')
 templates=Jinja2Templates(directory=str(ROOT/'templates'))
 
 @app.get('/health')
-def health():return {'status':'ok'}
+def health():return {'status':'ok','version':APP_VERSION,'database':'postgresql' if engine.dialect.name=='postgresql' else 'sqlite'}
 
 @app.get('/login',response_class=HTMLResponse)
 def login_page(request:Request,db:Session=Depends(db_session)):
     if get_user(request,db):return RedirectResponse('/',303)
-    return templates.TemplateResponse('login.html',{'request':request,'csrf':csrf(request),'error':''})
+    return templates.TemplateResponse(request, 'login.html', {'csrf':csrf(request),'error':''})
 
 @app.post('/login')
 def login(request:Request,email:str=Form(...),password:str=Form(...),token:str=Form(...),db:Session=Depends(db_session)):
     check_csrf(request,token)
     user=db.scalar(select(User).where(User.email==email.strip().lower()))
     if not user or not verify_password(password,user.password_hash):
-        return templates.TemplateResponse('login.html',{'request':request,'csrf':csrf(request),'error':'E-mail ou senha inválidos.'},status_code=401)
+        return templates.TemplateResponse(request, 'login.html', {'csrf':csrf(request),'error':'E-mail ou senha inválidos.'}, status_code=401)
     request.session.clear();request.session['uid']=user.id;csrf(request)
     return RedirectResponse('/',303)
 
@@ -181,7 +184,7 @@ def index(request:Request,db:Session=Depends(db_session)):
     people=db.scalars(select(User).order_by(User.id)).all()
     events=db.scalars(select(Event).order_by(Event.starts_at.asc(),Event.id.asc())).all()
     items=[{'id':e.id,'title':e.title,'description':e.description,'start':local_dt(e.starts_at).strftime('%Y-%m-%dT%H:%M'),'end':local_dt(e.ends_at).strftime('%Y-%m-%dT%H:%M') if e.ends_at else '', 'date':local_dt(e.starts_at).strftime('%d/%m/%Y'),'time':local_dt(e.starts_at).strftime('%H:%M'),'owner':e.owner_id,'category':e.category,'location':e.location,'remind':e.remind_minutes,'completed':e.completed} for e in events]
-    return templates.TemplateResponse('dashboard.html',{'request':request,'user':user,'people':people,'events':items,'csrf':csrf(request),'push_enabled':push_enabled(),'vapid_public':os.getenv('VAPID_PUBLIC_KEY','')})
+    return templates.TemplateResponse(request, 'dashboard.html', {'user':user,'people':people,'events':items,'csrf':csrf(request),'push_enabled':push_enabled(),'vapid_public':os.getenv('VAPID_PUBLIC_KEY','')})
 
 def safe_event(db,event_id):
     event=db.get(Event,event_id)
@@ -254,3 +257,7 @@ async def subscribe(request:Request,db:Session=Depends(db_session)):
 def manifest():return FileResponse(ROOT/'static'/'manifest.webmanifest',media_type='application/manifest+json')
 @app.get('/service-worker.js')
 def service_worker():return FileResponse(ROOT/'static'/'service-worker.js',media_type='application/javascript',headers={'Service-Worker-Allowed':'/'})
+
+@app.get('/favicon.ico')
+def favicon():
+    return FileResponse(ROOT/'static'/'icon-192.png',media_type='image/png')
